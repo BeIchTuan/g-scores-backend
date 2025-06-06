@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file:
+      - dev.env
+    environment:
+      - TZ=UTC
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./src:/usr/src/app/src
+      - ./dataset:/usr/src/app/dataset
+    networks:
+      - g-scores-network
+
+  mongodb:
+    image: mongo:latest
+    restart: always    
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=g-scores
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - g-scores-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh mongodb://admin:admin123@localhost:27017/admin --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  redis:
+    image: redis:alpine
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - g-scores-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  g-scores-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  redis_data:
