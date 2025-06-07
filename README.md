@@ -113,3 +113,6 @@ The API will be available at:
 ```
 http://localhost:5000
 ```
+
+### 6. Deployment Link
+https://g-scores-backend-eq9j.onrender.com
