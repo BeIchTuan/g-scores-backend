@@ -6,9 +6,15 @@ import { ScoreLevel, ScoreLevelStats } from '../../domain/value-objects/score-le
 
 export class StudentRepository implements IStudentRepository {
   async findById(sbd: string): Promise<Student | null> {
-    const student = await StudentModel.findOne({ sbd });
-    if (!student) return null;
-    return this.toEntity(student);
+    if (!sbd || typeof sbd !== 'string') {
+      return null;
+    }
+
+    const student = await StudentModel.findOne({ sbd })
+      .lean()
+      .exec();
+
+    return student ? this.toEntity(student) : null;
   }
 
   async findAll(page = 1, limit = 10): Promise<Student[]> {
@@ -18,21 +24,6 @@ export class StudentRepository implements IStudentRepository {
       .limit(limit)
       .lean();
     return students.map(this.toEntity);
-  }
-
-  async create(student: Student): Promise<Student> {
-    const created = await StudentModel.create(student);
-    return this.toEntity(created);
-  }
-
-  async update(sbd: string, student: Partial<Student>): Promise<Student | null> {
-    const updated = await StudentModel.findOneAndUpdate(
-      { sbd },
-      { $set: student },
-      { new: true }
-    );
-    if (!updated) return null;
-    return this.toEntity(updated);
   }
 
   async delete(sbd: string): Promise<boolean> {
@@ -46,32 +37,41 @@ export class StudentRepository implements IStudentRepository {
     }).lean();
     return students.map(this.toEntity);
   }
+
   async findTopStudents(limit: number, subjects: (keyof Student)[]): Promise<Student[]> {
+    const projection = Object.fromEntries(subjects.map(subject => [subject, 1]));
+    projection['sbd'] = 1;
+
     const pipeline: PipelineStage[] = [
+      {
+        $match: {
+          $and: subjects.map(subject => ({ [subject]: { $ne: null } }))
+        }
+      },
+      {
+        $project: {
+          sbd: 1,
+          ...Object.fromEntries(subjects.map(subject => [subject, 1]))
+        }
+      },
       {
         $addFields: {
           averageScore: {
-            $avg: {
-              $filter: {
-                input: subjects.map(subject => `$${subject}`),
-                as: "score",
-                cond: { $ne: ["$$score", null] }
-              }
-            }
+            $avg: subjects.map(subject => ({
+              $cond: [{ $ne: [`$${subject}`, null] }, `$${subject}`, "$$REMOVE"]
+            }))
           }
         }
       },
-      { 
-        $sort: { averageScore: -1 } as Record<string, 1 | -1>
-      },
-      { 
-        $limit: limit 
-      }
+      { $sort: { averageScore: -1 } },
+      { $limit: limit }
     ];
+
 
     const students = await StudentModel.aggregate<Student>(pipeline);
     return students.map(this.toEntity);
   }
+
 
   async getAverageScores(): Promise<{ [key: string]: number }> {
     const pipeline = [
@@ -136,81 +136,69 @@ export class StudentRepository implements IStudentRepository {
 
   async getScoreLevelStatistics(): Promise<ScoreLevelStats[]> {
     const subjects = ['toan', 'ngu_van', 'ngoai_ngu', 'vat_li', 'hoa_hoc', 'sinh_hoc', 'lich_su', 'dia_li', 'gdcd'];
-    
-    const pipeline: PipelineStage[] = [
+
+    const pipelines = subjects.map(subject => [
+      {
+        $match: { [subject]: { $ne: null } }
+      },
+      {
+        $bucket: {
+          groupBy: `$${subject}`,
+          boundaries: [0, 4, 6, 8, 10.1],
+          default: 'invalid',
+          output: {
+            count: { $sum: 1 }
+          }
+        }
+      },
       {
         $project: {
           _id: 0,
-          scores: subjects.map(subject => ({
-            subject,
-            score: `$${subject}`
-          }))
+          subject: { $literal: subject },
+          level: {
+            $switch: {
+              branches: [
+                { case: { $eq: ['$_id', 0] }, then: ScoreLevel.BELOW_AVERAGE },
+                { case: { $eq: ['$_id', 4] }, then: ScoreLevel.AVERAGE },
+                { case: { $eq: ['$_id', 6] }, then: ScoreLevel.GOOD },
+                { case: { $eq: ['$_id', 8] }, then: ScoreLevel.EXCELLENT }
+              ],
+              default: 'invalid'
+            }
+          },
+          count: '$count'
         }
       },
-      { $unwind: '$scores' },
-      {
-        $group: {
-          _id: '$scores.subject',
-          excellent: {
-            $sum: {
-              $cond: [{ $and: [
-                { $gte: ['$scores.score', 8] },
-                { $ne: ['$scores.score', null] }
-              ]}, 1, 0]
-            }
-          },
-          good: {
-            $sum: {
-              $cond: [{ $and: [
-                { $gte: ['$scores.score', 6] },
-                { $lt: ['$scores.score', 8] },
-                { $ne: ['$scores.score', null] }
-              ]}, 1, 0]
-            }
-          },
-          average: {
-            $sum: {
-              $cond: [{ $and: [
-                { $gte: ['$scores.score', 4] },
-                { $lt: ['$scores.score', 6] },
-                { $ne: ['$scores.score', null] }
-              ]}, 1, 0]
-            }
-          },
-          belowAverage: {
-            $sum: {
-              $cond: [{ $and: [
-                { $lt: ['$scores.score', 4] },
-                { $ne: ['$scores.score', null] }
-              ]}, 1, 0]
-            }
-          },
-          total: {
-            $sum: { $cond: [{ $ne: ['$scores.score', null] }, 1, 0] }
-          }
-        }
-      }
-    ];
+      { $match: { level: { $ne: 'invalid' } } }
+    ]);
 
-    const results = await StudentModel.aggregate<{
-      _id: string;
-      excellent: number;
-      good: number;
-      average: number;
-      belowAverage: number;
-      total: number;
-    }>(pipeline);
+    const results = await Promise.all(
+      pipelines.map(pipeline => StudentModel.aggregate<{
+        subject: string;
+        level: ScoreLevel;
+        count: number;
+      }>(pipeline).exec())
+    );
 
-    return results.map(result => ({
-      subject: result._id,
-      levels: {
-        [ScoreLevel.EXCELLENT]: result.excellent,
-        [ScoreLevel.GOOD]: result.good,
-        [ScoreLevel.AVERAGE]: result.average,
-        [ScoreLevel.BELOW_AVERAGE]: result.belowAverage
-      },
-      total: result.total
-    }));
+    const stats: ScoreLevelStats[] = subjects.map(subject => {
+      const subjectResults = results.find(r => r[0]?.subject === subject) || [];
+      const levels = {
+        [ScoreLevel.EXCELLENT]: 0,
+        [ScoreLevel.GOOD]: 0,
+        [ScoreLevel.AVERAGE]: 0,
+        [ScoreLevel.BELOW_AVERAGE]: 0
+      };
+      let total = 0;
+
+      subjectResults.forEach(result => {
+        levels[result.level] = result.count;
+        total += result.count;
+      });
+
+      return { subject, levels, total };
+    });
+
+    return stats;
   }
 
   async getTopGroupAStudents(limit: number): Promise<Student[]> {

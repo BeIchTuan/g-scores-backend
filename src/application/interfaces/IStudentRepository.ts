@@ -4,9 +4,6 @@ import { ScoreLevel, ScoreLevelStats } from '../../domain/value-objects/score-le
 export interface IStudentRepository {
   findById(sbd: string): Promise<Student | null>;
   findAll(page?: number, limit?: number): Promise<Student[]>;
-  create(student: Student): Promise<Student>;
-  update(sbd: string, student: Partial<Student>): Promise<Student | null>;
-  delete(sbd: string): Promise<boolean>;
 
   findByScoreRange(subject: keyof Student, min: number, max: number): Promise<Student[]>;
   findTopStudents(limit: number, subjects: (keyof Student)[]): Promise<Student[]>;
