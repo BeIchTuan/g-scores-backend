@@ -15,17 +15,16 @@ app.use(morgan(morganFormat, {
   skip: (req, res) => process.env.NODE_ENV === 'production' && res.statusCode < 400
 }));
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://g-scores.com'] 
-    : ['http://localhost:5173'], 
+  origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
+  credentials: true, 
   optionsSuccessStatus: 204,
-  maxAge: 86400, 
+  maxAge: 86400,
   preflightContinue: false,
   exposedHeaders: ['Content-Length', 'Content-Type']
 }));
+
 app.use(express.json());
 
 app.use('/api/students', studentRoutes);
